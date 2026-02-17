@@ -59,6 +59,7 @@ class Schedule:
     """Base class for train schedules"""
 
     def __init__(self, data):
+        self.raw_data = data
         self.train_type = data.get("h_trn_clsf_cd")
         self.train_type_name = data.get("h_trn_clsf_nm")
         self.train_group = data.get("h_trn_gp_cd")
@@ -69,11 +70,15 @@ class Schedule:
         self.dep_code = data.get("h_dpt_rs_stn_cd")
         self.dep_date = data.get("h_dpt_dt")
         self.dep_time = data.get("h_dpt_tm")
+        self.dep_station_run_order = data.get("h_dpt_stn_run_ordr")
+        self.dep_station_constitution_order = data.get("h_dpt_stn_cons_ordr")
 
         self.arr_name = data.get("h_arv_rs_stn_nm")
         self.arr_code = data.get("h_arv_rs_stn_cd")
         self.arr_date = data.get("h_arv_dt")
         self.arr_time = data.get("h_arv_tm")
+        self.arr_station_run_order = data.get("h_arv_stn_run_ordr")
+        self.arr_station_constitution_order = data.get("h_arv_stn_cons_ordr")
 
         self.run_date = data.get("h_run_dt")
 

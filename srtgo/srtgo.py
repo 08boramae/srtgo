@@ -170,6 +170,8 @@ KTX_BENEFITS = {
     },
 }
 
+VIA_WARNING_STATIONS = ["오송", "천안아산", "광명"]
+
 RailType = Union[str, None]
 ChoiceType = Union[int, None]
 
@@ -264,6 +266,14 @@ def _next_time_hhmmss(hhmmss: str) -> str:
         return hhmmss
 
 
+def _append_via_warning_tags(msg: str, warnings: list[str]) -> str:
+    if not warnings:
+        return msg
+
+    tags = " ".join(colored(f"{station}경유", "red") for station in warnings)
+    return f"{msg}  {tags}"
+
+
 def _train_key(train):
     return (
         str(getattr(train, "train_number", getattr(train, "train_no", ""))),
@@ -272,6 +282,106 @@ def _train_key(train):
         str(getattr(train, "dep_station_code", getattr(train, "dep_code", ""))),
         str(getattr(train, "arr_station_code", getattr(train, "arr_code", ""))),
     )
+
+
+def _train_service_key(train):
+    return (
+        str(getattr(train, "train_number", getattr(train, "train_no", ""))),
+        str(getattr(train, "dep_date", getattr(train, "run_date", ""))),
+        str(getattr(train, "dep_time", "")),
+        str(getattr(train, "train_code", getattr(train, "train_type", ""))),
+    )
+
+
+def _to_int(value) -> int | None:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_run_order_between(dep_order: int, arr_order: int, target_order: int) -> bool:
+    if dep_order == arr_order:
+        return False
+
+    if dep_order < arr_order:
+        return dep_order < target_order < arr_order
+    return arr_order < target_order < dep_order
+
+
+def _collect_via_warning_map(rail, trains: list, params: dict, is_srt: bool):
+    if not trains:
+        return {}
+
+    dep_station = params.get("dep")
+    arr_station = params.get("arr")
+    if not dep_station or not arr_station:
+        return {}
+
+    targets = [
+        station
+        for station in VIA_WARNING_STATIONS
+        if station not in {dep_station, arr_station}
+    ]
+    if not targets:
+        return {}
+
+    main_keys = {_train_service_key(train) for train in trains}
+    warnings = {key: [] for key in main_keys}
+    lookup_params = dict(params)
+
+    # 혜택 코드 조건으로 인해 조회 결과가 달라지는 것을 피하기 위해
+    # 경유 판정 조회는 할인 코드 없이 수행한다.
+    if not is_srt:
+        lookup_params.pop("discount_code", None)
+        lookup_params.pop("discount_menu_id", None)
+
+    for target in targets:
+        target_params = dict(lookup_params)
+        target_params["arr"] = target
+
+        try:
+            target_trains = _search_trains(rail, target_params, is_srt)
+        except (NoResultsError, ValueError, KorailError, SRTError):
+            continue
+
+        target_run_orders = {}
+        for target_train in target_trains:
+            key = _train_service_key(target_train)
+            if key not in main_keys:
+                continue
+
+            target_run_order = _to_int(
+                getattr(
+                    target_train,
+                    "arr_station_run_order",
+                    getattr(target_train, "arr_run_order", None),
+                )
+            )
+            if target_run_order is None:
+                continue
+
+            target_run_orders[key] = target_run_order
+
+        for train in trains:
+            key = _train_service_key(train)
+            target_run_order = target_run_orders.get(key)
+            if target_run_order is None:
+                continue
+
+            dep_order = _to_int(
+                getattr(train, "dep_station_run_order", getattr(train, "dep_run_order", None))
+            )
+            arr_order = _to_int(
+                getattr(train, "arr_station_run_order", getattr(train, "arr_run_order", None))
+            )
+            if dep_order is None or arr_order is None:
+                continue
+
+            if _is_run_order_between(dep_order, arr_order, target_run_order):
+                warnings[key].append(target)
+
+    return {key: stations for key, stations in warnings.items() if stations}
 
 
 def _search_trains(rail, params: dict, is_srt: bool, target_keys: set | None = None):
@@ -868,13 +978,17 @@ def reserve(rail_type="SRT", debug=False):
     except NoResultsError:
         trains = []
 
+    via_warning_map = _collect_via_warning_map(rail, trains, params, is_srt)
+
     def train_decorator(train):
         msg = train.__repr__()
-        return (
+        msg = (
             msg.replace("예약가능", colored("가능", "green"))
             .replace("가능", colored("가능", "green"))
             .replace("신청하기", colored("가능", "green"))
         )
+        warning_stations = via_warning_map.get(_train_service_key(train), [])
+        return _append_via_warning_tags(msg, warning_stations)
 
     if not trains:
         if not is_srt and ktx_benefit["discount_code"]:
