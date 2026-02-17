@@ -1,21 +1,67 @@
-# SRTgo: K-Train (KTX, SRT) Reservation Assistant
-[![Upload Python Package](https://github.com/lapis42/srtgo/actions/workflows/python-publish.yml/badge.svg)](https://github.com/lapis42/srtgo/actions/workflows/python-publish.yml)
-[![Downloads](https://static.pepy.tech/badge/srtgo)](https://pepy.tech/project/srtgo)
-[![Downloads](https://static.pepy.tech/badge/srtgo/month)](https://pepy.tech/project/srtgo)
-[![Python version](https://img.shields.io/pypi/pyversions/srtgo)](https://pypistats.org/packages/srtgo)
+# srtgo (Private)
+KTX/SRT 예매 보조용 CLI 도구입니다.
+터미널 메뉴 기반으로 로그인, 노선 선택, 예매/조회/취소, 카드결제, 텔레그램 알림을 처리합니다.
 
-> [!NOTE]
-> 공정한 예매 문화 조성을 위해 본 프로젝트의 개발 및 지원을 중단하기로 결정했습니다. 양해 부탁드립니다.
+## 주요 기능
+- SRT / KTX 통합 메뉴
+- 역/승객/옵션 설정 저장 (`keyring`)
+- 반복 조회 기반 자동 예매 시도
+- 텔레그램 알림 전송
+- 카드 결제(설정 시)
 
-> [!WARNING]
-> 본 프로그램의 모든 상업적, 영리적 이용을 엄격히 금지합니다. 본 프로그램 사용에 따른 민형사상 책임을 포함한 모든 책임은 사용자에게 있으며, 본 프로그램의 개발자는 민형사상 책임을 포함한 어떠한 책임도 부담하지 않습니다. 본 프로그램을 내려받음으로써 모든 사용자는 위 사항에 이의 없이 동의하는 것으로 간주됩니다.
+### 커스텀 반영 사항
+- NetFunnel 대기 중 사설 IP(예: `10.x.x.x`) 타임아웃 회피 로직
+- SRT/KTX 열차 조회 결과 다중 페이지 확장(기본 10개 초과 조회)
+- `예약할 열차 선택` 화면만 표시 행 수 확장
+- KTX 열차명 원문 표기 (`KTX-청룡`, `KTX-산천` 등)
 
----
-> [!NOTE]
-> I have decided to discontinue the development and support for this project. Thank you for your understanding.
+## 설치
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install .
+```
 
-> [!WARNING]
-> All commercial and profit-making use of this program is strictly prohibited. Use of this program is at your own risk, and the developers of this program shall not be liable for any liability, including civil or criminal liability. By downloading this program, all users are deemed to agree to the above terms without any objection.
+## 실행
+```bash
+srtgo
+```
+
+## 첫 실행 권장 순서
+1. `로그인 설정`
+2. `역 설정` 또는 `역 직접 수정`
+3. (선택) `예매 옵션 설정`
+4. (선택) `텔레그램 설정`
+5. (선택) `카드 설정`
+6. `예매 시작`
+
+## 환경변수
+필요 시 아래 값으로 동작을 조정할 수 있습니다.
+
+- `SRTGO_SRT_SEARCH_PAGES`
+  - SRT 조회 페이지 수 (기본 `4`)
+- `SRTGO_KTX_SEARCH_PAGES`
+  - KTX 조회 페이지 수 (기본 `4`)
+- `SRTGO_MAX_OPTIONS_DISPLAYED`
+  - `예약할 열차 선택` 화면 표시 행 수 (기본 `25`, 홀수 권장)
+
+예시:
+```bash
+SRTGO_SRT_SEARCH_PAGES=6 SRTGO_KTX_SEARCH_PAGES=6 SRTGO_MAX_OPTIONS_DISPLAYED=31 srtgo
+```
+
+## 보안/개인정보 주의
+- 계정/카드/텔레그램 정보는 코드에 하드코딩하지 말고 메뉴에서 입력하세요.
+- 민감정보는 운영체제 `keyring`에 저장되며 Git에는 커밋되지 않습니다.
+- 푸시 전에는 반드시 아래를 확인하세요.
+  - `git status`
+  - `git diff --staged`
+
+## 면책
+- 본 도구 사용에 따른 모든 책임은 사용자 본인에게 있습니다.
+- 서비스 정책, 약관, 법규를 준수하여 사용하세요.
 
 ## Acknowledgments
-- This project includes code from [SRT](https://github.com/ryanking13/SRT) by ryanking13, licensed under the MIT License, and [korail2](https://github.com/carpedm20/korail2) by carpedm20, licensed under the BSD License.
+- [SRT](https://github.com/ryanking13/SRT) (MIT License)
+- [korail2](https://github.com/carpedm20/korail2) (BSD License)
