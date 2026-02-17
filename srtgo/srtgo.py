@@ -13,6 +13,7 @@ import asyncio
 import click
 import inquirer
 import keyring
+import os
 import telegram
 import time
 import re
@@ -20,6 +21,7 @@ import re
 from .ktx import (
     Korail,
     KorailError,
+    NoResultsError,
     ReserveOption,
     TrainType,
     AdultPassenger,
@@ -123,9 +125,162 @@ RESERVE_INTERVAL_SCALE = 0.25
 RESERVE_INTERVAL_MIN = 0.25
 
 WAITING_BAR = ["|", "/", "-", "\\"]
+DEFAULT_PROMPT_MAX_OPTIONS = 25
+DEFAULT_SRT_SEARCH_PAGES = 4
+DEFAULT_KTX_SEARCH_PAGES = 4
+SEARCH_PAGE_SIZE = 10
 
 RailType = Union[str, None]
 ChoiceType = Union[int, None]
+
+
+def _get_prompt_max_options() -> int:
+    try:
+        max_options = int(
+            os.getenv("SRTGO_MAX_OPTIONS_DISPLAYED", str(DEFAULT_PROMPT_MAX_OPTIONS))
+        )
+    except (TypeError, ValueError):
+        max_options = DEFAULT_PROMPT_MAX_OPTIONS
+
+    max_options = max(3, max_options)
+    if max_options % 2 == 0:
+        max_options += 1
+    return max_options
+
+
+def _configure_inquirer_max_options(max_options: int | None = None):
+    max_options = max_options or _get_prompt_max_options()
+    half_options = (max_options - 1) // 2
+
+    try:
+        from inquirer.render.console import _checkbox as checkbox_render
+        from inquirer.render.console import _list as list_render
+        from inquirer.render.console import base as console_base
+    except Exception:
+        return None
+
+    previous_state = (
+        console_base,
+        checkbox_render,
+        list_render,
+        console_base.MAX_OPTIONS_DISPLAYED_AT_ONCE,
+        console_base.half_options,
+        checkbox_render.MAX_OPTIONS_DISPLAYED_AT_ONCE,
+        checkbox_render.half_options,
+        list_render.MAX_OPTIONS_DISPLAYED_AT_ONCE,
+        list_render.half_options,
+    )
+
+    console_base.MAX_OPTIONS_DISPLAYED_AT_ONCE = max_options
+    console_base.half_options = half_options
+    checkbox_render.MAX_OPTIONS_DISPLAYED_AT_ONCE = max_options
+    checkbox_render.half_options = half_options
+    list_render.MAX_OPTIONS_DISPLAYED_AT_ONCE = max_options
+    list_render.half_options = half_options
+    return previous_state
+
+
+def _restore_inquirer_max_options(state) -> None:
+    if not state:
+        return
+
+    (
+        console_base,
+        checkbox_render,
+        list_render,
+        base_max,
+        base_half,
+        checkbox_max,
+        checkbox_half,
+        list_max,
+        list_half,
+    ) = state
+
+    console_base.MAX_OPTIONS_DISPLAYED_AT_ONCE = base_max
+    console_base.half_options = base_half
+    checkbox_render.MAX_OPTIONS_DISPLAYED_AT_ONCE = checkbox_max
+    checkbox_render.half_options = checkbox_half
+    list_render.MAX_OPTIONS_DISPLAYED_AT_ONCE = list_max
+    list_render.half_options = list_half
+
+
+def _get_search_pages(is_srt: bool) -> int:
+    default_pages = DEFAULT_SRT_SEARCH_PAGES if is_srt else DEFAULT_KTX_SEARCH_PAGES
+    env_name = "SRTGO_SRT_SEARCH_PAGES" if is_srt else "SRTGO_KTX_SEARCH_PAGES"
+    try:
+        pages = int(os.getenv(env_name, str(default_pages)))
+    except (TypeError, ValueError):
+        pages = default_pages
+    return max(1, pages)
+
+
+def _next_time_hhmmss(hhmmss: str) -> str:
+    try:
+        next_time = datetime.strptime(hhmmss, "%H%M%S") + timedelta(seconds=1)
+        if next_time.day != 1:
+            return "235959"
+        return next_time.strftime("%H%M%S")
+    except ValueError:
+        return hhmmss
+
+
+def _train_key(train):
+    return (
+        str(getattr(train, "train_number", getattr(train, "train_no", ""))),
+        str(getattr(train, "dep_date", getattr(train, "run_date", ""))),
+        str(getattr(train, "dep_time", "")),
+        str(getattr(train, "dep_station_code", getattr(train, "dep_code", ""))),
+        str(getattr(train, "arr_station_code", getattr(train, "arr_code", ""))),
+    )
+
+
+def _search_trains(rail, params: dict, is_srt: bool, target_keys: set | None = None):
+    merged_trains = []
+    seen_keys = set()
+    remaining_targets = set(target_keys) if target_keys else None
+    search_time = params["time"]
+
+    for _ in range(_get_search_pages(is_srt)):
+        page_params = dict(params)
+        page_params["time"] = search_time
+        try:
+            page_trains = rail.search_train(**page_params)
+        except NoResultsError:
+            if merged_trains:
+                break
+            raise
+
+        if not page_trains:
+            break
+
+        added_count = 0
+        for train in page_trains:
+            key = _train_key(train)
+            if key in seen_keys:
+                continue
+
+            seen_keys.add(key)
+            merged_trains.append(train)
+            added_count += 1
+            if remaining_targets is not None:
+                remaining_targets.discard(key)
+
+        if remaining_targets is not None and not remaining_targets:
+            break
+
+        if len(page_trains) < SEARCH_PAGE_SIZE or added_count == 0:
+            break
+
+        last_dep_time = max(
+            (getattr(train, "dep_time", search_time) for train in page_trains),
+            default=search_time,
+        )
+        next_time = _next_time_hhmmss(last_dep_time)
+        if next_time <= search_time:
+            break
+        search_time = next_time
+
+    return merged_trains
 
 
 @click.command()
@@ -624,7 +779,7 @@ def reserve(rail_type="SRT", debug=False):
         ),
     }
 
-    trains = rail.search_train(**params)
+    trains = _search_trains(rail, params, is_srt)
 
     def train_decorator(train):
         msg = train.__repr__()
@@ -648,12 +803,18 @@ def reserve(rail_type="SRT", debug=False):
         ),
     ]
 
-    choice = inquirer.prompt(q_choice)
+    inquirer_state = _configure_inquirer_max_options()
+    try:
+        choice = inquirer.prompt(q_choice)
+    finally:
+        _restore_inquirer_max_options(inquirer_state)
+
     if choice is None or not choice["trains"]:
         print(colored("선택한 열차가 없습니다!", "green", "on_red") + "\n")
         return
 
-    n_trains = len(choice["trains"])
+    selected_train_keys = [_train_key(trains[i]) for i in choice["trains"]]
+    selected_train_key_set = set(selected_train_keys)
 
     # Get seat type preference
     seat_type = SeatType if is_srt else ReserveOption
@@ -709,10 +870,14 @@ def reserve(rail_type="SRT", debug=False):
                 flush=True,
             )
 
-            trains = rail.search_train(**params)
-            for i in choice["trains"]:
-                if _is_seat_available(trains[i], options["type"], rail_type):
-                    _reserve(trains[i])
+            trains = _search_trains(
+                rail, params, is_srt, target_keys=selected_train_key_set
+            )
+            trains_by_key = {_train_key(train): train for train in trains}
+            for key in selected_train_keys:
+                train = trains_by_key.get(key)
+                if train and _is_seat_available(train, options["type"], rail_type):
+                    _reserve(train)
                     return
             _sleep()
 

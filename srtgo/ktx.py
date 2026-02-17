@@ -83,10 +83,11 @@ class Schedule:
 
         dep_date = f"{int(self.dep_date[4:6]):02d}/{int(self.dep_date[6:]):02d}"
 
-        train_line = f"[{self.train_type_name[:3]} {self.train_no}]"
+        train_label = self.train_type_name or self.train_type
+        train_line = f"[{train_label} {self.train_no}]"
 
         return (
-            f"{train_line:<11s}"
+            f"{train_line:<18s}"
             f"{dep_date} {dep_time}~{arr_time}  "
             f"{self.dep_name}~{self.arr_name}"
         )

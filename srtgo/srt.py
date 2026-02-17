@@ -9,6 +9,7 @@ except ImportError:
 import json
 import re
 import time
+from ipaddress import ip_address
 from enum import Enum
 from datetime import datetime
 from typing import Dict, List, Pattern
@@ -498,6 +499,9 @@ class SRTTrain(Train):
 
 # NetFunnel
 class NetFunnelHelper:
+    NETFUNNEL_HOST = "nf.letskorail.com"
+    REQUEST_TIMEOUT = 6
+
     WAIT_STATUS_PASS = "200"
     WAIT_STATUS_FAIL = "201"
     ALREADY_COMPLETED = "502"
@@ -580,13 +584,33 @@ class NetFunnelHelper:
         return self._make_request("setComplete", ip)
 
     def _make_request(self, opcode: str, ip: str | None = None):
-        url = f"https://{ip or 'nf.letskorail.com'}/ts.wseq"
         params = self._build_params(self.OP_CODE[opcode])
-        r = self._session.get(url, params=params, verify=False)
-        if self.debug:
-            print(r.text)
-        response = self._parse(r.text)
-        return map(response.get, ("status", "key", "nwait", "ip"))
+        candidate_ips = [None] if (not ip or self._is_private_ip(ip)) else [ip, None]
+
+        last_error = None
+        for candidate_ip in candidate_ips:
+            try:
+                url = self._build_url(candidate_ip)
+                r = self._session.get(
+                    url,
+                    params=params,
+                    verify=False,
+                    timeout=self.REQUEST_TIMEOUT,
+                )
+                if self.debug:
+                    print(r.text)
+                response = self._parse(r.text)
+                return tuple(response.get(k) for k in ("status", "key", "nwait", "ip"))
+            except Exception as ex:
+                last_error = ex
+                if self.debug:
+                    print(
+                        f"[NetFunnel] request failed ({candidate_ip or self.NETFUNNEL_HOST}): {ex}"
+                    )
+
+        raise SRTNetFunnelError(
+            str(last_error) if last_error else "Failed to request NetFunnel"
+        )
 
     def _build_params(
         self, opcode: str, timestamp: str = None, key: str = None
@@ -627,6 +651,29 @@ class NetFunnelHelper:
         return bool(
             self._cached_key
             and (current_time - self._last_fetch_time) < self._cache_ttl
+        )
+
+    def _build_url(self, ip: str | None = None) -> str:
+        return f"https://{ip or self.NETFUNNEL_HOST}/ts.wseq"
+
+    @staticmethod
+    def _is_private_ip(ip: str | None) -> bool:
+        if not ip:
+            return False
+
+        host = ip.split(":", 1)[0]
+        try:
+            parsed = ip_address(host)
+        except ValueError:
+            return False
+
+        return (
+            parsed.is_private
+            or parsed.is_loopback
+            or parsed.is_link_local
+            or parsed.is_reserved
+            or parsed.is_multicast
+            or parsed.is_unspecified
         )
 
 
