@@ -303,6 +303,13 @@ class AdultPassenger(Passenger):
         )
 
 
+class TeenPassenger(Passenger):
+    def __init__(self, count=1, discount_type="P11", card="", card_no="", card_pw=""):
+        Passenger.__init_internal__(
+            self, "1", count, discount_type, card, card_no, card_pw
+        )
+
+
 class ChildPassenger(Passenger):
     def __init__(self, count=1, discount_type="000", card="", card_no="", card_pw=""):
         Passenger.__init_internal__(
@@ -619,6 +626,8 @@ class Korail:
         passengers=None,
         include_no_seats=False,
         include_waiting_list=False,
+        discount_code=None,
+        discount_menu_id=None,
     ):
         kst_now = datetime.now() + timedelta(hours=9)
         date = date or kst_now.strftime("%Y%m%d")
@@ -628,6 +637,7 @@ class Korail:
 
         counts = {
             "adult": sum(p.count for p in passengers if isinstance(p, AdultPassenger)),
+            "teenager": sum(p.count for p in passengers if isinstance(p, TeenPassenger)),
             "child": sum(p.count for p in passengers if isinstance(p, ChildPassenger)),
             "toddler": sum(
                 p.count for p in passengers if isinstance(p, ToddlerPassenger)
@@ -647,7 +657,8 @@ class Korail:
             "Device": self._device,
             "Version": self._version,
             "Sid": "",
-            "txtMenuId": "11",
+            "txtMenuId": discount_menu_id or ("41" if discount_code else "11"),
+            "txtGdNo": discount_code or "",
             "radJobId": "1",
             "selGoTrain": train_type,
             "txtTrnGpCd": train_type,
@@ -655,7 +666,7 @@ class Korail:
             "txtGoEnd": arr,
             "txtGoAbrdDt": date,
             "txtGoHour": time,
-            "txtPsgFlg_1": counts["adult"],
+            "txtPsgFlg_1": counts["adult"] + counts["teenager"],
             "txtPsgFlg_2": counts["child"] + counts["toddler"],
             "txtPsgFlg_3": counts["senior"],
             "txtPsgFlg_4": counts["disability1to3"],
@@ -692,7 +703,14 @@ class Korail:
 
             return trains
 
-    def reserve(self, train, passengers=None, option=ReserveOption.GENERAL_FIRST):
+    def reserve(
+        self,
+        train,
+        passengers=None,
+        option=ReserveOption.GENERAL_FIRST,
+        discount_code=None,
+        discount_menu_id=None,
+    ):
         reserving_seat = train.has_seat() or train.wait_reserve_flag < 0
         if reserving_seat:
             is_special_seat = {
@@ -717,9 +735,9 @@ class Korail:
             "Device": self._device,
             "Version": self._version,
             "Key": self._key,
-            "txtMenuId": "11",
+            "txtMenuId": discount_menu_id or ("41" if discount_code else "11"),
             "txtJobId": "1101" if reserving_seat else "1102",
-            "txtGdNo": "",
+            "txtGdNo": discount_code or "",
             "hidFreeFlg": "N",
             "txtTotPsgCnt": cnt,
             "txtSeatAttCd1": "000",

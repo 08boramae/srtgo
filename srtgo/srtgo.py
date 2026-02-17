@@ -25,6 +25,7 @@ from .ktx import (
     ReserveOption,
     TrainType,
     AdultPassenger,
+    TeenPassenger,
     ChildPassenger,
     SeniorPassenger,
     Disability1To3Passenger,
@@ -129,6 +130,45 @@ DEFAULT_PROMPT_MAX_OPTIONS = 25
 DEFAULT_SRT_SEARCH_PAGES = 4
 DEFAULT_KTX_SEARCH_PAGES = 4
 SEARCH_PAGE_SIZE = 10
+
+KTX_BENEFITS = {
+    "normal": {
+        "label": "일반 운임",
+        "discount_code": "",
+        "menu_id": "11",
+        "adult_class": AdultPassenger,
+    },
+    "young": {
+        "label": "힘내라 청춘",
+        "discount_code": "Y20150924001",
+        "menu_id": "41",
+        "adult_class": AdultPassenger,
+    },
+    "teen_dream": {
+        "label": "청소년 드림",
+        "discount_code": "B121410002GY",
+        "menu_id": "41",
+        "adult_class": TeenPassenger,
+    },
+    "mom": {
+        "label": "맘편한 KTX",
+        "discount_code": "Y20150924002",
+        "menu_id": "41",
+        "adult_class": AdultPassenger,
+    },
+    "multi_child": {
+        "label": "다자녀행복",
+        "discount_code": "Y20151104001",
+        "menu_id": "41",
+        "adult_class": AdultPassenger,
+    },
+    "basic_life": {
+        "label": "기차누리(기초생활)",
+        "discount_code": "Y20180208001",
+        "menu_id": "41",
+        "adult_class": AdultPassenger,
+    },
+}
 
 RailType = Union[str, None]
 ChoiceType = Union[int, None]
@@ -702,6 +742,7 @@ def reserve(rail_type="SRT", debug=False):
 
     PASSENGER_TYPE = {
         passenger_classes["adult"]: "어른/청소년",
+        TeenPassenger: "청소년드림",
         passenger_classes["child"]: "어린이",
         passenger_classes["senior"]: "경로우대",
         passenger_classes["disability1to3"]: "1~3급 장애인",
@@ -731,6 +772,34 @@ def reserve(rail_type="SRT", debug=False):
         print(colored("출발역과 도착역이 같습니다", "green", "on_red") + "\n")
         return
 
+    ktx_benefit_key = "normal"
+    ktx_benefit = KTX_BENEFITS["normal"]
+    if not is_srt:
+        default_benefit = keyring.get_password("KTX", "benefit") or "normal"
+        if default_benefit not in KTX_BENEFITS:
+            default_benefit = "normal"
+
+        benefit_info = inquirer.prompt(
+            [
+                inquirer.List(
+                    "ktx_benefit",
+                    message="KTX 혜택 선택 (↕:이동, Enter: 선택, Ctrl-C: 취소)",
+                    choices=[
+                        (benefit["label"], key)
+                        for key, benefit in KTX_BENEFITS.items()
+                    ],
+                    default=default_benefit,
+                )
+            ]
+        )
+        if not benefit_info:
+            print(colored("예매 정보 입력 중 취소되었습니다", "green", "on_red") + "\n")
+            return
+
+        ktx_benefit_key = benefit_info["ktx_benefit"]
+        ktx_benefit = KTX_BENEFITS[ktx_benefit_key]
+        keyring.set_password("KTX", "benefit", ktx_benefit_key)
+
     # Save preferences
     for key, value in info.items():
         keyring.set_password(rail_type, key, str(value))
@@ -744,7 +813,10 @@ def reserve(rail_type="SRT", debug=False):
     total_count = 0
     for key, cls in passenger_classes.items():
         if key in info and info[key] > 0:
-            passengers.append(cls(info[key]))
+            passenger_cls = cls
+            if not is_srt and key == "adult":
+                passenger_cls = ktx_benefit["adult_class"]
+            passengers.append(passenger_cls(info[key]))
             total_count += info[key]
 
     # Validate passenger count
@@ -761,6 +833,8 @@ def reserve(rail_type="SRT", debug=False):
         for passenger in passengers
     ]
     print(*msg_passengers)
+    if not is_srt:
+        print(f"KTX 혜택: {ktx_benefit['label']}")
 
     # Search for trains
     params = {
@@ -768,18 +842,31 @@ def reserve(rail_type="SRT", debug=False):
         "arr": info["arrival"],
         "date": info["date"],
         "time": info["time"],
-        "passengers": [passenger_classes["adult"](total_count)],
+        "passengers": (
+            [passenger_classes["adult"](total_count)] if is_srt else passengers
+        ),
         **(
             {"available_only": False}
             if is_srt
             else {
                 "include_no_seats": True,
                 **({"train_type": TrainType.KTX} if "ktx" in options else {}),
+                **(
+                    {
+                        "discount_code": ktx_benefit["discount_code"],
+                        "discount_menu_id": ktx_benefit["menu_id"],
+                    }
+                    if ktx_benefit["discount_code"]
+                    else {}
+                ),
             }
         ),
     }
 
-    trains = _search_trains(rail, params, is_srt)
+    try:
+        trains = _search_trains(rail, params, is_srt)
+    except NoResultsError:
+        trains = []
 
     def train_decorator(train):
         msg = train.__repr__()
@@ -790,7 +877,17 @@ def reserve(rail_type="SRT", debug=False):
         )
 
     if not trains:
-        print(colored("예약 가능한 열차가 없습니다", "green", "on_red") + "\n")
+        if not is_srt and ktx_benefit["discount_code"]:
+            print(
+                colored(
+                    f"선택한 혜택({ktx_benefit['label']})으로 예약 가능한 열차가 없습니다",
+                    "green",
+                    "on_red",
+                )
+                + "\n"
+            )
+        else:
+            print(colored("예약 가능한 열차가 없습니다", "green", "on_red") + "\n")
         return
 
     # Get train selection
@@ -839,7 +936,19 @@ def reserve(rail_type="SRT", debug=False):
 
     # Reserve function
     def _reserve(train):
-        reserve = rail.reserve(train, passengers=passengers, option=options["type"])
+        reserve_kwargs = {
+            "passengers": passengers,
+            "option": options["type"],
+        }
+        if not is_srt and ktx_benefit["discount_code"]:
+            reserve_kwargs.update(
+                {
+                    "discount_code": ktx_benefit["discount_code"],
+                    "discount_menu_id": ktx_benefit["menu_id"],
+                }
+            )
+
+        reserve = rail.reserve(train, **reserve_kwargs)
         msg = f"{reserve}"
         if hasattr(reserve, "tickets") and reserve.tickets:
             msg += "\n" + "\n".join(map(str, reserve.tickets))
